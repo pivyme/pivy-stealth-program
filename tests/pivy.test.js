@@ -1,21 +1,16 @@
-// pivy.test.js — final version
+// pivy.stealth.test.js
 // ================================================================
-import "dotenv/config";
-import assert from "assert";
-import BN from "bn.js";
-import bs58 from "bs58";
-import fs from "fs";
-import path from "path";
-import { PRIVY_STEALTH_IDL } from "../target/idl/IDL.js";
+// End-to-end test for the PIVY Stealth program
+// ================================================================
 
-import * as anchor from "@coral-xyz/anchor";
+import 'dotenv/config';
+import assert from 'assert';
+import BN from 'bn.js';
+import bs58 from 'bs58';
+import * as anchor from '@coral-xyz/anchor';
 import {
-  Connection,
-  Keypair,
-  SystemProgram,
-  Transaction,
-  PublicKey,
-} from "@solana/web3.js";
+  Connection, Keypair, SystemProgram, Transaction, PublicKey,
+} from '@solana/web3.js';
 import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -24,177 +19,72 @@ import {
   createMint,
   getAccount,
   mintToChecked,
+  createAccount,                    // 👈 regular token-account helper
   transferChecked,
-  createSyncNativeInstruction,
-  NATIVE_MINT,
-  closeAccount,
-} from "@solana/spl-token";
-import * as ed from "@noble/ed25519";
-import { sha256 } from "@noble/hashes/sha256";
+} from '@solana/spl-token';
+import * as ed from '@noble/ed25519';
+import { sha256 } from '@noble/hashes/sha256';
+import { PRIVY_STEALTH_IDL } from '../target/idl/IDL.js';
 
 /*──────────────────────────────────────────────────────────────────*/
-/* ENV                                                               */
+/*  ENV + provider                                                  */
 /*──────────────────────────────────────────────────────────────────*/
-const TEST_WALLET_PK        = process.env.TEST_WALLET_PK;
-const CHAIN                 = process.env.CHAIN ?? "devnet";
-const PIVY_PROGRAM_ADDRESS  = process.env.PIVY_PROGRAM_ADDRESS; // optional in anchor test
+const { TEST_WALLET_PK, PIVY_PROGRAM_ADDRESS, CHAIN = 'devnet' } = process.env;
+if (!TEST_WALLET_PK || !PIVY_PROGRAM_ADDRESS)
+  throw new Error('Provide TEST_WALLET_PK and PIVY_PROGRAM_ADDRESS');
 
-if (!TEST_WALLET_PK) throw new Error("TEST_WALLET_PK missing in .env");
+const RPC = CHAIN === 'mainnet-beta'
+  ? 'https://api.mainnet-beta.solana.com'
+  : 'https://api.devnet.solana.com';
 
-/*──────────────────────────────────────────────────────────────────*/
-const RPC = CHAIN === "mainnet-beta"
-  ? "https://api.mainnet-beta.solana.com"
-  : "https://api.devnet.solana.com";
-/*──────────────────────────────────────────────────────────────────*/
 const payerKP = (() => {
   try { return Keypair.fromSecretKey(bs58.decode(TEST_WALLET_PK)); }
   catch { return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(TEST_WALLET_PK))); }
 })();
 
-const connection = new Connection(RPC, "confirmed");
-const wallet     = new anchor.Wallet(payerKP);
-const provider   = new anchor.AnchorProvider(connection, wallet, { commitment: "confirmed" });
+const connection = new Connection(RPC, 'confirmed');
+const wallet = new anchor.Wallet(payerKP);
+const provider = new anchor.AnchorProvider(connection, wallet, { commitment: 'confirmed' });
 anchor.setProvider(provider);
 
-/*──────────────────────────────────────────────────────────────────*/
-/* Program loading logic (workspace → local IDL JSON fallback)      */
-/*──────────────────────────────────────────────────────────────────*/
-//------------------------------------------------------------------
-//  Program loader (no workspace, no metadata.address needed)
-//------------------------------------------------------------------
-if (!process.env.PIVY_PROGRAM_ADDRESS)
-  throw new Error("Set PIVY_PROGRAM_ADDRESS in .env");
-
-const PROGRAM_ID = new PublicKey(process.env.PIVY_PROGRAM_ADDRESS);
-
-// Use the imported IDL directly
+const PROGRAM_ID = new PublicKey(PIVY_PROGRAM_ADDRESS);
 const program = new anchor.Program(PRIVY_STEALTH_IDL, PROGRAM_ID, provider);
 
-console.log({
-  PROGRAM_ID
-})
-
 /*──────────────────────────────────────────────────────────────────*/
-/* Stealth helpers                                                  */
+/*  Helpers (⇢ kept identical crypto)                               */
 /*──────────────────────────────────────────────────────────────────*/
-const L = BigInt(
-  "0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"
-);
-const bytesToNumberLE = (u8) =>
-  u8.reduceRight((p, c) => (p << 8n) + BigInt(c), 0n);
+const L = BigInt('0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed');
+const bytesToNumberLE = (u8) => u8.reduceRight((p, c) => (p << 8n) + BigInt(c), 0n);
 const mod = (x, n) => ((x % n) + n) % n;
 
-export async function deriveStealthKeypair(metaSpend, metaViewPk, ephPriv) {
-  console.log("\n🔑 Deriving Stealth Keypair...");
-  console.log("├─ Meta View Public Key:", metaViewPk.toString('hex'));
-  console.log("├─ Ephemeral Private Key:", ephPriv.toString('hex').slice(0, 20) + "...");
-  
+async function deriveStealthKeypair(metaSpend, metaViewPk, ephPriv) {
   const shared = await ed.getSharedSecret(ephPriv, metaViewPk);
-  console.log("├─ Shared Secret Generated:", shared.toString('hex').slice(0, 20) + "...");
-  
-  const hash = sha256(shared);
-  const hashHex = Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('');
-  console.log("├─ Hash Generated:", hashHex.slice(0, 20) + "...");
-  
-  const tweak = mod(BigInt(`0x${hashHex}`), L);
+  const tweak = mod(
+    BigInt('0x' + Buffer.from(sha256(shared)).toString('hex')),
+    L,
+  );
   const a = bytesToNumberLE(metaSpend.secretKey.subarray(0, 32));
   const s = mod(a + tweak, L);
-  console.log("└─ Tweak Applied");
-
   const seed = Uint8Array.from(
-    s.toString(16).padStart(64, "0").match(/.{2}/g).map((b)=>parseInt(b,16))
+    s.toString(16).padStart(64, '0').match(/.{2}/g).map((b) => parseInt(b, 16))
   );
   const pk = await ed.getPublicKey(seed);
-  const sk = new Uint8Array(64);
-  sk.set(seed, 0); sk.set(pk, 32);
+  const sk = new Uint8Array(64); sk.set(seed, 0); sk.set(pk, 32);
   return Keypair.fromSecretKey(sk);
 }
 
-/*──────── SOL wrap / unwrap (client side) ────────*/
-export async function wrapSol(payer, lamports) {
-  const ata = getAssociatedTokenAddressSync(NATIVE_MINT, payer.publicKey);
-  const tx = new Transaction()
-    .add(
-      createAssociatedTokenAccountIdempotentInstruction(
-        payer.publicKey,
-        ata,
-        payer.publicKey,
-        NATIVE_MINT
-      )
-    )
-    .add(
-      SystemProgram.transfer({
-        fromPubkey: payer.publicKey,
-        toPubkey: ata,
-        lamports,
-      })
-    )
-    .add(createSyncNativeInstruction(ata));
-  await provider.sendAndConfirm(tx, [payer]);
-  return ata;
-}
-export async function unwrapSol(payer) {
-  const ata = getAssociatedTokenAddressSync(NATIVE_MINT, payer.publicKey);
-  if (!(await connection.getAccountInfo(ata))) return;
-  await provider.sendAndConfirm(
-    new Transaction().add(
-      closeAccount({ source: ata, destination: payer.publicKey, owner: payer.publicKey })
-    ), [payer]
-  );
-}
-
-/*──────── preparePayIx (frontend helper) ─────────*/
-export async function preparePayIx({
-  payer,
-  mint,
-  payerAta,
-  stealthOwner,
-  stealthAta,
-  amount,
-  label,
-  ephPubkey,
-}) {
-  const labelBuf = Buffer.alloc(32);
-  labelBuf.write(label);
-  return await program.methods
-    .pay({
-      amount: new BN(amount),
-      label: [...labelBuf],
-      ephPubkey,
-    })
-    .accounts({
-      stealthOwner,
-      stealthAta,
-      payer: payer.publicKey,
-      payerAta,
-      mint,
-      systemProgram: SystemProgram.programId,
-      tokenProgram: TOKEN_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-    })
-    .instruction();
-}
-
 /*──────────────────────────────────────────────────────────────────*/
-/*  End-to-end test                                                */
+/*  Test flow                                                       */
 /*──────────────────────────────────────────────────────────────────*/
 (async () => {
-  console.log("\n🚀 Starting Pivy Stealth Payment Test");
-  console.log("├─ RPC:", RPC);
-  console.log("├─ Payer:", payerKP.publicKey.toBase58());
-  console.log("└─ Program:", program.programId.toBase58(), "\n");
+  console.log(`\n🌐  RPC            : ${RPC}`);
+  console.log(`👛  Test wallet    : ${payerKP.publicKey}`);
+  console.log(`📦  Program        : ${PROGRAM_ID}\n`);
 
-  /* 1️⃣ Mint 6-dec test USDC and fund payer */
-  console.log("💰 Creating Test USDC Token");
-  console.log("├─ Decimals: 6");
+  /* 1️⃣ mint test-USDC and fund payer --------------------------------*/
+  console.log('🚧 1. Creating test USDC mint');
   const mint = await createMint(connection, payerKP, payerKP.publicKey, null, 6);
-  console.log("├─ Mint Address:", mint.toBase58());
-  
   const payerAta = getAssociatedTokenAddressSync(mint, payerKP.publicKey);
-  console.log("└─ Payer ATA:", payerAta.toBase58());
-
-  console.log("\n💳 Funding Payer Account");
   await provider.sendAndConfirm(
     new Transaction().add(
       createAssociatedTokenAccountIdempotentInstruction(
@@ -202,86 +92,90 @@ export async function preparePayIx({
       )
     ), [payerKP]
   );
-  await mintToChecked(
-    connection, payerKP, mint, payerAta, payerKP.publicKey, 1_000_000_000, 6
-  );
-  console.log("└─ Minted 1,000 USDC to payer");
+  await mintToChecked(connection, payerKP, mint, payerAta, payerKP.publicKey, 1_000_000_000, 6);
+  console.log('   ✓ minted & funded\n');
 
-  /* 2️⃣ Derive stealth address */
-  console.log("\n🎭 Generating Stealth Payment Details");
+  /* 2️⃣ derive stealth keys ------------------------------------------*/
+  console.log('🔐 2. Deriving stealth address');
   const metaSpend = Keypair.generate();
   const metaView = Keypair.generate();
   const eph = Keypair.generate();
-  console.log("├─ Meta Spend Public Key:", metaSpend.publicKey.toBase58());
-  console.log("├─ Meta View Public Key:", metaView.publicKey.toBase58());
-  console.log("└─ Ephemeral Public Key:", eph.publicKey.toBase58());
-
   const stealthKP = await deriveStealthKeypair(
-    metaSpend, metaView.publicKey.toBytes(), eph.secretKey.subarray(0,32)
+    metaSpend, metaView.publicKey.toBytes(), eph.secretKey.subarray(0, 32)
   );
-  const stealthOwner = stealthKP.publicKey;
-  const stealthAta = getAssociatedTokenAddressSync(mint, stealthOwner);
-  
-  console.log("\n👻 Stealth Address Generated");
-  console.log("├─ Stealth Owner:", stealthOwner.toBase58());
-  console.log("└─ Stealth ATA:", stealthAta.toBase58());
+  const stealthAta = getAssociatedTokenAddressSync(mint, stealthKP.publicKey);
+  console.log('   Stealth owner  :', stealthKP.publicKey.toBase58());
+  console.log('   Stealth ATA    :', stealthAta.toBase58(), '\n');
 
-  /* 3️⃣ Pay 25 USDC */
-  console.log("\n💸 Sending Stealth Payment");
-  console.log("├─ Amount: 25 USDC");
-  console.log("├─ Label: freelance");
-  const payIx = await preparePayIx({
-    payer: payerKP, mint, payerAta, stealthOwner, stealthAta,
-    amount: 25_000_000, label: "freelance", ephPubkey: eph.publicKey
-  });
+  /* 3️⃣ pay 25 USDC --------------------------------------------------*/
+  console.log('💸 3. Paying 25 USDC into stealth');
+  const labelBuf = Buffer.alloc(32); labelBuf.write('freelance');
+  const payIx = await program.methods.pay({
+    amount: new BN(25_000_000),
+    label: [...labelBuf],
+    ephPubkey: eph.publicKey,
+  }).accounts({
+    stealthOwner: stealthKP.publicKey,
+    stealthAta,
+    payer: payerKP.publicKey,
+    payerAta,
+    mint,
+    systemProgram: SystemProgram.programId,
+    tokenProgram: TOKEN_PROGRAM_ID,
+    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+  }).instruction();
   await provider.sendAndConfirm(new Transaction().add(payIx), [payerKP]);
-  console.log("└─ Payment Sent Successfully");
+  console.log('   ✓ payment done\n');
 
-  const stealthBalance = Number((await getAccount(connection, stealthAta)).amount);
-  console.log("\n💎 Stealth Balance:", stealthBalance / 1_000_000, "USDC");
+  /* 4️⃣ withdraw 5 + sweep remainder --------------------------------*/
+  console.log('🏦 4. Withdrawing via program');
+  // create a *regular* token account owned by stealth key (not an ATA)
+  const collectorTA = await createAccount(
+    connection, payerKP, mint, stealthKP.publicKey
+  );
+  console.log('   Collector TA   :', collectorTA.toBase58());
 
-  /* 4️⃣ Withdraw all (auto-close) */
-  console.log("\n🏦 Withdrawing from Stealth Address");
-  const destAta = getAssociatedTokenAddressSync(mint, stealthOwner);
+  // 4-a withdraw 5
+  await program.methods.withdraw({ amount: new BN(5_000_000) })
+    .accounts({
+      stealthOwner: stealthKP.publicKey, stealthAta, destinationAta: collectorTA,
+      mint, tokenProgram: TOKEN_PROGRAM_ID
+    })
+    .signers([stealthKP]).rpc();
+  console.log('   ✓ withdrew 5 USDC');
+
+  // 4-b sweep rest
+  const remaining = Number((await getAccount(connection, stealthAta)).amount);
+  await program.methods.withdraw({ amount: new BN(remaining) })
+    .accounts({
+      stealthOwner: stealthKP.publicKey, stealthAta, destinationAta: collectorTA,
+      mint, tokenProgram: TOKEN_PROGRAM_ID
+    })
+    .signers([stealthKP]).rpc();
+  console.log('   ✓ withdrew remaining & program closed stealth ATA\n');
+
+  /* 5️⃣ move funds to test wallet -----------------------------------*/
+  console.log('➡️ 5. Moving funds to test wallet ATA');
+  const finalWalletAta = getAssociatedTokenAddressSync(mint, payerKP.publicKey);
   await provider.sendAndConfirm(
     new Transaction().add(
       createAssociatedTokenAccountIdempotentInstruction(
-        payerKP.publicKey, destAta, stealthOwner, mint
-      )
-    ), [payerKP]
+        payerKP.publicKey, finalWalletAta, payerKP.publicKey, mint
+      ),
+      transferChecked({
+        source: collectorTA,
+        mint,
+        decimals: 6,
+        destination: finalWalletAta,
+        owner: stealthKP.publicKey,
+        amount: 25_000_000,
+      })
+    ), [stealthKP]
   );
+  const endBal = Number((await getAccount(connection, finalWalletAta)).amount);
+  assert.strictEqual(endBal, 25_000_000, 'final balance should be 25 USDC');
+  console.log('   ✓ transferred – test wallet now holds 25 USDC');
 
-  // First, transfer the exact amount
-  await program.methods
-    .withdraw({ amount: new BN(stealthBalance) })
-    .accounts({
-      stealthOwner,
-      stealthAta,
-      destinationAta: destAta,
-      mint,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .signers([stealthKP])
-    .rpc();
-  console.log("├─ Transferred funds to destination");
-
-  // Then, close the empty account
-  await program.methods
-    .withdraw({ amount: new BN(0) })
-    .accounts({
-      stealthOwner,
-      stealthAta,
-      destinationAta: destAta,
-      mint,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .signers([stealthKP])
-    .rpc();
-  console.log("├─ Closed stealth ATA");
-
-  const finalBalance = Number((await getAccount(connection, destAta)).amount);
-  console.log("├─ Withdrawn to:", destAta.toBase58());
-  console.log("└─ Final Balance:", finalBalance / 1_000_000, "USDC");
-
-  console.log("\n✅ All tests passed (pay + withdraw w/ ATA auto-close)\n");
+  console.log('\n✅  All steps succeeded\n');
 })();
