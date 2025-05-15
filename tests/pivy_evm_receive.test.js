@@ -4,7 +4,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import bs58 from 'bs58';
 import axios from 'axios';
-import { PublicKey, Keypair, SystemProgram, Connection, sendAndConfirmTransaction } from '@solana/web3.js';
+import { PublicKey, Keypair, SystemProgram, Connection, sendAndConfirmTransaction, Transaction } from '@solana/web3.js';
 import {
     getAssociatedTokenAddress,
     TOKEN_PROGRAM_ID,
@@ -12,10 +12,11 @@ import {
 
 import { hexlify } from 'ethers';
 import * as anchor from '@coral-xyz/anchor';
+import { PRIVY_STEALTH_IDL } from '../target/idl/IDL.js';
+
 
 const { Program, AnchorProvider, setProvider } = anchor;
 const { BN } = anchor.default;
-
 
 // ============ Load IDLs ============
 const messageTransmitterIdl = JSON.parse(
@@ -31,8 +32,12 @@ const SRC_DOMAIN = parseInt(process.env.SRC_DOMAIN);
 const DEST_DOMAIN = parseInt(process.env.DEST_DOMAIN);
 const USDC_BASE_ADDRESS = process.env.USDC_BASE_ADDRESS;
 const USDC_SOL_ADDRESS = new PublicKey(process.env.USDC_SOL_ADDRESS);
-const RECIPIENT_ADDRESS = new PublicKey('BKzXfofPKUcsj7tyZQxEJL24rAUasDJzQPiHvGz8rSLA'); // Should change to recipient's Solana address
-const txHash = '0x8fce937516d561cbde8f04d2fc444bbe7f1d8dfd594557edfb5d631a400336cf';
+
+
+// need to be updated
+const RECIPIENT = new PublicKey('4mFTMHo55mkDaZvD6divw7QjHb5LHfy247zeKB8LQc9q');
+const TX_HASH = '0xb2913fa1dfd9a7eb05a13ce196ec49f3207664b92a78712462a2e2f9750401b2';
+const STEATH_ATA = new PublicKey('6Ski83UahUXWTrkNKZkL4QczpST9YhXmDoNZLrkfTraz');
 
 const SOLANA_FEE_PAYER = Keypair.fromSecretKey(
     bs58.decode(process.env.SOLANA_FEE_PAYER_PK)
@@ -77,6 +82,10 @@ const tokenMessengerMinterProgram = new Program(
     TOKEN_MESSENGER_MINTER_PROGRAM_ID,
     provider
 );
+
+const PIVY_PROGRAM_ADDRESS = process.env.PIVY_PROGRAM_ADDRESS;
+const PROGRAM_ID = new PublicKey(PIVY_PROGRAM_ADDRESS);
+const pivyProgram = new anchor.Program(PRIVY_STEALTH_IDL, PROGRAM_ID, provider);
 
 // ============ Utilities ============
 const hexToBytes = (hex) => Buffer.from(hex.replace(/^0x/, ''), 'hex');
@@ -177,10 +186,7 @@ async function retrieveAttestation(txHash) {
 }
 
 // ============ Receive Message ============
-async function receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce) {
-    const userTokenAccount = await getAssociatedTokenAddress(USDC_SOL_ADDRESS, RECIPIENT_ADDRESS);
-    console.log("🔍 User Token Account:", userTokenAccount.toString());
-
+async function receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce, recipient, stealthAta) {
     const pdas = await getReceiveMessagePdas(
         messageTransmitterProgram,
         tokenMessengerMinterProgram,
@@ -199,7 +205,7 @@ async function receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce) 
         { pubkey: pdas.tokenMinterAccount.publicKey, isWritable: true, isSigner: false },
         { pubkey: pdas.localToken.publicKey, isWritable: true, isSigner: false },
         { pubkey: pdas.tokenPair.publicKey, isWritable: false, isSigner: false },
-        { pubkey: userTokenAccount, isWritable: true, isSigner: false },
+        { pubkey: stealthAta, isWritable: true, isSigner: false },
         { pubkey: pdas.custodyTokenAccount.publicKey, isWritable: true, isSigner: false },
         { pubkey: TOKEN_PROGRAM_ID, isWritable: false, isSigner: false },
         { pubkey: pdas.tokenMessengerEventAuthority.publicKey, isWritable: false, isSigner: false },
@@ -208,40 +214,64 @@ async function receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce) 
 
     console.log("✅ Account Metas Prepared");
 
-    console.log("🔍 Message:", messageHex.replace(/^0x/, ''),);
-    const tx = await messageTransmitterProgram.methods
-        .receiveMessage({
-            message: Buffer.from(messageHex.replace(/^0x/, ''), 'hex'),
-            attestation: Buffer.from(attestationHex.replace('0x', ''), 'hex'),
-        })
-        .accounts({
-            payer: SOLANA_FEE_PAYER.publicKey,
-            caller: SOLANA_FEE_PAYER.publicKey,
-            authorityPda: pdas.authorityPda,
-            messageTransmitter: pdas.messageTransmitterAccount.publicKey,
-            usedNonces: pdas.usedNonces,
-            receiver: tokenMessengerMinterProgram.programId,
-            systemProgram: SystemProgram.programId,
-        })
-        .remainingAccounts(accountMetas)
-        .signers([SOLANA_FEE_PAYER])
-        .transaction();
-    console.log("🔍 Transaction prepared");
-
-    // Send transaction
+    // First transaction - receive message
     try {
-        const txid = await provider.sendAndConfirm(tx);
-        console.log("✅ Transaction hash:", txid);
+        const receiveMessageIx = await messageTransmitterProgram.methods
+            .receiveMessage({
+                message: Buffer.from(messageHex.replace(/^0x/, ''), 'hex'),
+                attestation: Buffer.from(attestationHex.replace(/^0x/, ''), 'hex'),
+            })
+            .accounts({
+                payer: SOLANA_FEE_PAYER.publicKey,
+                caller: SOLANA_FEE_PAYER.publicKey,
+                authorityPda: pdas.authorityPda,
+                messageTransmitter: pdas.messageTransmitterAccount.publicKey,
+                usedNonces: pdas.usedNonces,
+                receiver: tokenMessengerMinterProgram.programId,
+                systemProgram: SystemProgram.programId,
+            })
+            .remainingAccounts(accountMetas)
+            .instruction();
+
+        const receiveTx = new Transaction().add(receiveMessageIx);
+        const receiveSig = await sendAndConfirmTransaction(connection, receiveTx, [SOLANA_FEE_PAYER]);
+        console.log("✅ Receive message TX:", receiveSig);
+
+        // Log intermediate balance
+        const midBalance = await connection.getTokenAccountBalance(stealthAta);
+        console.log("📊 Balance after receive:", midBalance.value.uiAmount);
+
+        // Second transaction - announce
+        const stealthBalance = new BN(midBalance.value.amount);
+        const labelBuf = Buffer.alloc(32);
+        labelBuf.write("dummy.pivy.me");
+
+        const announceIx = await pivyProgram.methods
+            .announce({
+                amount: stealthBalance,
+                label: [...labelBuf],
+                ephPubkey: recipient,
+            })
+            .accounts({
+                stealthOwner: recipient,
+                payer: SOLANA_FEE_PAYER.publicKey,
+                mint: USDC_SOL_ADDRESS,
+            })
+            .instruction();
+
+        const announceTx = new Transaction().add(announceIx);
+        const announceSig = await sendAndConfirmTransaction(connection, announceTx, [SOLANA_FEE_PAYER]);
+        console.log("✅ Announce TX:", announceSig);
     }
     catch (error) {
-        console.error("❌ Transaction failed:", error);
-        return;
+        console.error("❌ Error during transaction:", error);
+        throw error;
     }
 }
 
 // ============ Main Flow ============
 (async () => {
-    const attestation = await retrieveAttestation(txHash);
+    const attestation = await retrieveAttestation(TX_HASH);
 
     const messageHex = attestation.message;
     const attestationHex = attestation.attestation;
@@ -252,5 +282,5 @@ async function receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce) 
     const nonce = decodeEventNonceFromMessage(messageHex);
     console.log("🔍 Nonce:", nonce);
 
-    await receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce);
+    await receiveMessage(messageHex, attestationHex, remoteUsdcHex, nonce, RECIPIENT, STEATH_ATA);
 })();
