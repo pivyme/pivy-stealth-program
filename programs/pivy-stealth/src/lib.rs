@@ -1,16 +1,6 @@
 //! PIVY Stealth Payment Program
 //! ============================
 //! Privacy-preserving one-way escrow for Solana SPL tokens (incl. WSOL).
-//!
-//! # Workflow (ERC-5564 style)
-//! 1. **Receiver** publishes `(meta_spend, meta_view)` public keys off-chain.
-//! 2. **Payer** generates an *ephemeral* key `e` per payment, derives a
-//!    unique stealth pubkey `S = A + H(e·B)·G`, and calls `pay()`.
-//! 3. Funds arrive in `S`’s ATA.  Only the owner—who can compute the
-//!    corresponding private scalar—may later call `withdraw()`.
-//!
-//! No long-term keys or links ever touch the chain; every payment lands in
-//! what looks like a fresh random address.
 
 use anchor_lang::prelude::*;
 use anchor_spl::{
@@ -31,7 +21,7 @@ pub enum StealthError {
     SameAccount,
 }
 
-/// Off-chain indexer event: every successful payment
+/// Emitted for every `pay` **or** `announce`
 #[event]
 pub struct PaymentEvent {
     pub stealth_owner: Pubkey,
@@ -40,9 +30,12 @@ pub struct PaymentEvent {
     pub amount: u64,
     pub label: [u8; 32],
     pub eph_pubkey: Pubkey,
+    /// `false` → funds moved with `pay`
+    /// `true`  → log-only `announce`
+    pub announce: bool,
 }
 
-/// Off-chain indexer event: every successful withdrawal
+/// Emitted after every successful withdrawal
 #[event]
 pub struct WithdrawEvent {
     pub stealth_owner: Pubkey,
@@ -117,6 +110,7 @@ pub fn handle_pay(ctx: Context<Pay>, args: PayArgs) -> Result<()> {
         amount: args.amount,
         label: args.label,
         eph_pubkey: args.eph_pubkey,
+        announce: false,
     });
     Ok(())
 }
@@ -169,7 +163,6 @@ pub fn handle_withdraw(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()>
         StealthError::DestinationOwnerMismatch
     );
 
-    // transfer
     token::transfer(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
@@ -182,7 +175,6 @@ pub fn handle_withdraw(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()>
         amount,
     )?;
 
-    // auto-close if empty (reload to ensure correct balance)
     ctx.accounts.stealth_ata.reload()?;
     if ctx.accounts.stealth_ata.amount == 0 {
         token::close_account(CpiContext::new(
@@ -205,6 +197,43 @@ pub fn handle_withdraw(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()>
 }
 
 /* ------------------------------------------------------------------ */
+/*                             Announce                               */
+/* ------------------------------------------------------------------ */
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct AnnounceArgs {
+    pub amount: u64,
+    pub label: [u8; 32],
+    pub eph_pubkey: Pubkey,
+}
+
+#[derive(Accounts)]
+pub struct Announce<'info> {
+    /// Stealth receiver (fresh every payment) – unchecked by design
+    pub stealth_owner: UncheckedAccount<'info>,
+
+    /// Entity making the announcement (usually the payer)
+    pub payer: Signer<'info>,
+
+    /// Mint referenced in the announcement
+    pub mint: Box<Account<'info, Mint>>,
+}
+
+pub fn handle_announce(ctx: Context<Announce>, args: AnnounceArgs) -> Result<()> {
+    require!(args.amount > 0, StealthError::InvalidAmount);
+
+    emit!(PaymentEvent {
+        stealth_owner: ctx.accounts.stealth_owner.key(),
+        payer: ctx.accounts.payer.key(),
+        mint: ctx.accounts.mint.key(),
+        amount: args.amount,
+        label: args.label,
+        eph_pubkey: args.eph_pubkey,
+        announce: true,
+    });
+    Ok(())
+}
+
+/* ------------------------------------------------------------------ */
 /*                             Entrypoint                             */
 /* ------------------------------------------------------------------ */
 #[program]
@@ -214,7 +243,13 @@ pub mod pivy_stealth {
     pub fn pay(ctx: Context<Pay>, args: PayArgs) -> Result<()> {
         handle_pay(ctx, args)
     }
+
     pub fn withdraw(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()> {
         handle_withdraw(ctx, args)
+    }
+
+    /// Emits a `PaymentEvent` without moving funds.
+    pub fn announce(ctx: Context<Announce>, args: AnnounceArgs) -> Result<()> {
+        handle_announce(ctx, args)
     }
 }
