@@ -23,7 +23,7 @@ import {
 } from '@solana/spl-token';
 import * as ed from '@noble/ed25519';
 import { sha256 } from '@noble/hashes/sha256';
-import { PRIVY_STEALTH_IDL } from '../target/idl/IDL.js';
+import { PIVY_STEALTH_IDL } from '../target/idl/IDL.js';
 
 /*──────────────────────────────────────────────────────────────────*/
 /*  ENV & provider                                                  */
@@ -56,7 +56,7 @@ const provider = new anchor.AnchorProvider(connection, wallet, {
 anchor.setProvider(provider);
 
 const PROGRAM_ID = new PublicKey(PIVY_PROGRAM_ADDRESS);
-const program = new anchor.Program(PRIVY_STEALTH_IDL, PROGRAM_ID, provider);
+const program = new anchor.Program(PIVY_STEALTH_IDL, PROGRAM_ID, provider);
 
 /*──────────────────────────────────────────────────────────────────*/
 /*  Helper: derive stealth keypair (UNCHANGED math)                 */

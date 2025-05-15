@@ -12,7 +12,7 @@ import {
 
 import { hexlify } from 'ethers';
 import * as anchor from '@coral-xyz/anchor';
-import { PRIVY_STEALTH_IDL } from '../target/idl/IDL.js';
+import { PIVY_STEALTH_IDL } from '../target/idl/IDL.js';
 
 
 const { Program, AnchorProvider, setProvider } = anchor;
@@ -85,7 +85,7 @@ const tokenMessengerMinterProgram = new Program(
 
 const PIVY_PROGRAM_ADDRESS = process.env.PIVY_PROGRAM_ADDRESS;
 const PROGRAM_ID = new PublicKey(PIVY_PROGRAM_ADDRESS);
-const pivyProgram = new anchor.Program(PRIVY_STEALTH_IDL, PROGRAM_ID, provider);
+const pivyProgram = new anchor.Program(PIVY_STEALTH_IDL, PROGRAM_ID, provider);
 
 // ============ Utilities ============
 const hexToBytes = (hex) => Buffer.from(hex.replace(/^0x/, ''), 'hex');

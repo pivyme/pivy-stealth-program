@@ -9,6 +9,7 @@
     "@noble/curves": "^1.9.1",
     "@noble/ed25519": "^1.6.0",
     "@noble/hashes": "^1.4.0",
+    "@perena/numeraire-sdk": "^1.0.21",
     "@solana/spl-token": "^0.4.13",
     "@solana/web3.js": "^1.93.1",
     "assert": "*",
