@@ -134,5 +134,26 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     console.log("💰 Balance (u128):", balanceU128.toString());
     const display = Number(balanceU128) / 1e18;
     console.log(display, "USDC");
-    console.log("📈 getBalance logs:", result);
+
+    console.log("Withdrawing from position:", position.toBase58());
+
+    // Withdraw funds (principal + yield)
+    await program.methods
+        .withdraw()
+        .accounts({
+            position,
+            owner: user.publicKey,
+            dst: userAta,
+            vault: vaultAccount,
+            programAuthority,
+            mint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+
+    console.log("✅ Withdraw complete!");
+    // Get user's token account balance
+    const balanceInfo = await connection.getTokenAccountBalance(userAta);
+    console.log(`🧾 User USDC Balance After Withdraw: ${balanceInfo.value.uiAmount} USDC`);
+
 })();
