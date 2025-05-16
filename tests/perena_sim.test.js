@@ -1,65 +1,138 @@
-import { PublicKey, Connection, clusterApiUrl, Keypair } from "@solana/web3.js";
+import * as anchor from "@coral-xyz/anchor";
 import {
-    init,                     // boot-straps the SDK
-    addLiquidity,             // helper that builds the ix
-    loadKeypairFromFile,      // reads your payer keypair
-    PRODUCTION_POOLS,         // pre-baked pool addresses
-} from "@perena/numeraire-sdk";
-import bs58 from 'bs58';
-import 'dotenv/config';
+    Connection,
+    Keypair,
+    PublicKey,
+    SystemProgram,
+    Transaction,
+} from "@solana/web3.js";
+import {
+    getAssociatedTokenAddress,
+    TOKEN_PROGRAM_ID,
+    createAssociatedTokenAccountInstruction,
+    closeAccount
+} from "@solana/spl-token";
+import bs58 from "bs58";
+import BN from "bn.js";
+import "dotenv/config";
+import { vaultIdl } from "../target/idl/vault_idl.js";
 
-const { SOLANA_FEE_PAYER_PK, TEST_WALLET_PK } = process.env;
+// --[ Setup ]-----------------------------------------------------------
+
+const connection = new Connection("https://api.devnet.solana.com", "confirmed");
+const wallet = new anchor.Wallet(
+    Keypair.fromSecretKey(bs58.decode(process.env.SOLANA_FEE_PAYER_PK))
+);
+const provider = new anchor.AnchorProvider(connection, wallet, {
+    commitment: "confirmed",
+});
+anchor.setProvider(provider);
+
+// --[ Constants ]-------------------------------------------------------
+
+const programId = new PublicKey("GYVFfTi9v1cfhZvXg92LPhs65uWcRH8enWbKpSnrKNx3");
+const mint = new PublicKey(process.env.USDC_SOL_ADDRESS); // e.g., Devnet USDC
+const program = new anchor.Program(vaultIdl, programId, provider);
+const user = provider.wallet;
+
+// --[ Helpers ]---------------------------------------------------------
+
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// --[ Main Execution ]--------------------------------------------------
 
 (async () => {
-    /* ------------------------------------------------------------------ */
-    /*  1. Initialise SDK                                                 */
-    /* ------------------------------------------------------------------ */
-    console.log("Loading payer keypair from", SOLANA_FEE_PAYER_PK);
-    const payer = Keypair.fromSecretKey(
-        bs58.decode(SOLANA_FEE_PAYER_PK)
+    console.log("User:", user.publicKey.toBase58());
+
+    // Derive PDAs
+    const [position] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vpos"), user.publicKey.toBuffer(), mint.toBuffer()],
+        program.programId
     );
-    const connection = new Connection('https://api.mainnet-beta.solana.com', {
-        commitment: "confirmed",
-    });
+    const [programAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("auth")],
+        program.programId
+    );
 
-    // applyD = false ➜ don’t overwrite provider; just give us helpers
-    init({ payer, connection, applyD: false });
+    // Derive associated token accounts
+    const userAta = await getAssociatedTokenAddress(mint, user.publicKey);
+    const vaultAccount = await getAssociatedTokenAddress(mint, programAuthority, true);
+    const posAccount = await getAssociatedTokenAddress(mint, position, true);
 
-    /* ------------------------------------------------------------------ */
-    /*  2. Build the add_liquidity call                                   */
-    /*      –  amounts are in *raw* units (6-decimals for all USD stables)*/
-    /* ------------------------------------------------------------------ */
-    const MAX = 1_000_000;        //  = 1 USDC/USDT/PYUSD if decimals = 6
-    console.log("Pool address:", PRODUCTION_POOLS.tripool);
-    const { call } = await addLiquidity({
-        pool: new PublicKey(PRODUCTION_POOLS.tripool), // USDC/USDT/PYUSD ➜ USD*
-        maxAmountsIn: [15 * MAX, 10 * MAX, 10 * MAX],  // 15 USDC, 10 USDT, 10 PYUSD
-        minLpTokenMintAmount: 1,    // mint at least 1 µUSD*
-        takeSwaps: true,            // perform internal balancing swaps
-    });
-    /* ------------------------------------------------------------------ */
-    /*  3. Simulate instead of RPC                                        */
-    /* ------------------------------------------------------------------ */
-    const sim = await call.simulate();     // <-- zero cost; no state change
-    console.log("Simulation result:\n", sim);
+    // Create vault ATA if missing
+    const vaultInfo = await connection.getAccountInfo(vaultAccount);
+    if (!vaultInfo) {
+        const ix = createAssociatedTokenAccountInstruction(
+            wallet.publicKey,
+            vaultAccount,
+            programAuthority,
+            mint
+        );
+        await provider.sendAndConfirm(new Transaction().add(ix));
+        console.log("✅ Vault ATA created:", vaultAccount.toBase58());
+    }
 
-    /* ------------------------------------------------------------------ */
-    /*  4. Pretty-print the outcome                                       */
-    /*      sim.events is already ABI-decoded by Anchor                   */
-    /* ------------------------------------------------------------------ */
-    const { events, logs, units } = sim;
+    const posInfo = await connection.getAccountInfo(posAccount);
+    if (!posInfo) {
+        const ix = createAssociatedTokenAccountInstruction(
+            wallet.publicKey,
+            posAccount,
+            position,
+            mint
+        );
+        await provider.sendAndConfirm(new Transaction().add(ix));
+        console.log("✅ Position ATA created:", posAccount.toBase58());
+    }
 
-    // Find the AddLiquidity event that tells you how many USD* got minted
-    const liqEvt = events.find(e => e.name === "AddLiquidity");
-    console.log("Simulation logs:\n", logs.join("\n"));
-    console.log("\n--- AddLiquidity event --------------------------------");
-    console.dir(liqEvt, { depth: 5 });
+    console.log("Position PDA:        ", position.toBase58());
+    console.log("Program Authority PDA:", programAuthority.toBase58());
+    console.log("User ATA:            ", userAta.toBase58());
+    console.log("Vault ATA:           ", vaultAccount.toBase58());
 
-    /*  ( optional )                                                       
-        If you want to know the cost of actually executing the tx, you
-        can look at sim.units (consumed compute units) and decide the tip:
-  
-        const CU_PRICE = 5_000; // 5 nanosol / CU
-        console.log(`Would need ≈ ${(units * CU_PRICE) / 1e9} SOL priority fee`);
-    */
+
+    // --[ Optional: Make deposit ]--------------------------------------
+
+    // await program.methods
+    //     .deposit(new BN(1_000)) // 0.001 USDC
+    //     .accounts({
+    //         position,
+    //         owner: user.publicKey,
+    //         src: userAta,
+    //         vault: vaultAccount,
+    //         programAuthority,
+    //         mint,
+    //         tokenProgram: TOKEN_PROGRAM_ID,
+    //         systemProgram: SystemProgram.programId,
+    //     })
+    //     .rpc();
+    // console.log("✅ Deposit made");
+
+
+    // --[ Wait for yield accrual ]---------------------------------------
+    // await sleep(10_000);
+
+    // --[ Simulate get_balance() call ]----------------------------------
+    // Simulate yield accrual
+    const result = await program.methods
+        .getBalance()
+        .accounts({
+            position,
+            owner: user.publicKey,
+            dst: userAta,
+            vault: vaultAccount,
+            programAuthority,
+            mint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .simulate();
+
+    const encoded = result.raw.find(line => line.startsWith("Program return"));
+    const base64 = encoded?.split(" ").pop(); // gets jAqIpX6NAwAAAAAAAAAAAA==
+
+    const buffer = Buffer.from(base64, 'base64');
+    const balanceU128 = buffer.readBigUInt64LE(0) + (buffer.readBigUInt64LE(8) << BigInt(64));
+    console.log("💰 Balance (u128):", balanceU128.toString());
+    const display = Number(balanceU128) / 1e18;
+    console.log(display, "USDC");
+    console.log("📈 getBalance logs:", result);
 })();
