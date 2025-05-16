@@ -158,11 +158,6 @@ pub fn handle_withdraw(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()>
     };
     require!(amount > 0 && amount <= balance, StealthError::InvalidAmount);
 
-    require!(
-        ctx.accounts.destination_ata.owner == ctx.accounts.stealth_owner.key(),
-        StealthError::DestinationOwnerMismatch
-    );
-
     token::transfer(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),

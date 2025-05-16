@@ -141,6 +141,10 @@ async function deriveStealthKeypair(metaSpend, metaViewPk, ephPriv) {
     metaView.publicKey.toBytes(),
     eph.secretKey.subarray(0, 32),
   );
+  console.log('stealthKP', {
+    address: stealthKP.publicKey.toBase58(),
+    secretKey: bs58.encode(stealthKP.secretKey),
+  });
   const stealthAta = getAssociatedTokenAddressSync(mint, stealthKP.publicKey);
   console.log('   Stealth owner  :', stealthKP.publicKey.toBase58());
   console.log('   Stealth ATA    :', stealthAta.toBase58(), '\n');
