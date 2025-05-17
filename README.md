@@ -23,7 +23,7 @@ PIVY brings this paradigm to Solana, preserving:
 
 1. **Self-custody** – the stealth ATA is owned by the receiver's keypair.
 2. **Auditable privacy** – transfers are still on-chain, but unlinkable to the public wallet.
-3. **UX simplicity** – payers just click a `pivy.link`, no SDK required.
+3. **UX simplicity** – payers just click a `pivy link`, no SDK required.
 
 ---
 
