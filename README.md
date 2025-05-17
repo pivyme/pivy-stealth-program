@@ -5,6 +5,16 @@
 
 ---
 
+### 🗂️ Public Repositories
+
+| Repository | Purpose |
+|------------|---------|
+| [`pivy-stealth`](https://github.com/pivyme/pivy-stealth-program) | On-chain Anchor program (this repo) |
+| [`pivy-backend`](https://github.com/pivyme/pivy-backend) | Platform engine & event indexer |
+| [`pivy-app`](https://github.com/pivyme/pivy-app) | Next.js / Vite frontend & link generator |
+
+---
+
 ## ✨ TL;DR
 
 * **PIVY** turns any Solana wallet into a *private, unlinkable* escrow address – no additional keys required.
@@ -105,10 +115,8 @@ No central service ever touches user keys or funds.
 * **First-mover on Solana** – brings the privacy enhancements of ERC-5564 to the fastest L1.
 * **Pure-Rust, 100 LoC core** – minimal, auditable, battle-tested primitives (Anchor 0.29).
 * **Composable** – other programs can CPI into `pay` / `announce` for on-chain invoicing.
-* **Open Source** – MIT licensed, split into:
-  * `pivy-stealth` (this repo) – on-chain program
-  * [`pivy-backend`](https://github.com/pivyme/pivy-backend) – **the system that powers the whole platform** (indexer + REST)
-  * [`pivy-app`](https://github.com/pivyme/pivy-app) – **the frontend** web wallet & link generator
+* **Auditable Smart Contract** – `pivy-stealth` (this repo) is **public** and already deployed on Solana DEVNET → [`ECytFKSRMLkWYPp1jnnCEt8AcdnUeaLfKyfr16J3SgUk`](https://solscan.io/account/ECytFKSRMLkWYPp1jnnCEt8AcdnUeaLfKyfr16J3SgUk?cluster=devnet).
+* **Full Open-Source Platform** – Backend and frontend are now public; build on them, fork them, send PRs!
 
 ---
 
