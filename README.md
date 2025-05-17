@@ -11,7 +11,7 @@
 |------------|---------|
 | [`pivy-stealth`](https://github.com/pivyme/pivy-stealth-program) | On-chain Anchor program (this repo) |
 | [`pivy-backend`](https://github.com/pivyme/pivy-backend) | Platform engine & event indexer |
-| [`pivy-app`](https://github.com/pivyme/pivy-app) | Next.js / Vite frontend & link generator |
+| [`pivy-app`](https://github.com/pivyme/pivy-app) | ReactJS frontend & link generator |
 
 ---
 
