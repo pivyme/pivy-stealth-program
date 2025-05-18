@@ -3,6 +3,8 @@
 > **The first ERC-5564-inspired stealth-payment protocol live on Solana DEVNET.**  
 > Try it now at **https://pivy.me**
 
+🎥 **[Watch the Interactive Technical Demo Video](https://www.youtube.com/watch?v=0xSycmjG4tI)**
+
 ---
 
 ### 🗂️ Public Repositories
